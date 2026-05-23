@@ -15,7 +15,7 @@ dignities, receptions, antiscia, and Arabic Parts.
 |---|---|
 | **Ephemeris** | pyswisseph (Swiss Ephemeris) — same engine as AstroSeek |
 | **House system** | Regiomontanus (Frawley's explicit recommendation) |
-| **Planets** | Sun, Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto, North Node, Lilith |
+| **Planets** | Sun, Moon, Mercury, Venus, Mars, Jupiter, Saturn, North Node |
 | **Rulerships** | Traditional (Lilly) — Saturn rules Aquarius, Jupiter rules Pisces |
 | **Essential dignities** | Domicile, Exaltation, Triplicity (day/night), Terms (Ptolemaic), Faces (Chaldean), Peregrine |
 | **Debilities** | Detriment, Fall |
