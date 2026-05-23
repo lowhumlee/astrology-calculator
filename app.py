@@ -94,7 +94,7 @@ with st.sidebar:
     with col2:
         unknown_time = st.checkbox("Time unknown", value=False)
         if not unknown_time:
-            birth_time = st.time_input("Birth Time (local)", value=time(12, 0))
+            birth_time = st.time_input("Birth Time (local)", value=time(12, 0), step=60)
         else:
             birth_time = time(12, 0)
             st.caption("Noon chart will be used.")
@@ -220,7 +220,14 @@ with col_info:
 with col_chart:
     url = st.session_state.get("astroseek_url", "")
     if url:
-        st.image(url, caption="Chart wheel (AstroSeek)", use_container_width=True)
+        try:
+            img_resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            if img_resp.status_code == 200 and img_resp.headers.get("content-type", "").startswith("image"):
+                st.image(img_resp.content, caption="Chart wheel (AstroSeek)", width=700)
+            else:
+                st.warning(f"Chart image could not be loaded (status {img_resp.status_code}). URL below.")
+        except Exception as e:
+            st.warning(f"Could not fetch chart image: {e}")
         with st.expander("🔗 Chart image URL"):
             st.code(url, language="text")
 
@@ -249,8 +256,8 @@ with tab1:
             c = dignity_colors.get(val, "#555")
             return f"color: {c}; font-weight: bold"
 
-        styled = df.style.applymap(color_dignity, subset=["Dignity"])
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        styled = df.style.map(color_dignity, subset=["Dignity"])
+        st.dataframe(styled, width="stretch", hide_index=True)
 
     st.markdown("---")
     st.markdown("#### Dignity Legend")
@@ -268,7 +275,7 @@ with tab2:
 
     rows = get_house_lords_table(chart)
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
     st.markdown("---")
     # Visual house summary
@@ -399,7 +406,7 @@ with tab4:
 
         if antiscia_rows:
             df_anti = pd.DataFrame(antiscia_rows)
-            st.dataframe(df_anti, use_container_width=True, hide_index=True)
+            st.dataframe(df_anti, width="stretch", hide_index=True)
         else:
             st.info("No antiscia conjunctions/oppositions within 2° orb for this chart.")
 
@@ -413,7 +420,7 @@ with tab4:
                 "Antiscion": _lon_to_dms(p.antiscion),
                 "Antiscion Sign": p.antiscion_sign,
             })
-        st.dataframe(pd.DataFrame(anti_all), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(anti_all), width="stretch", hide_index=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
