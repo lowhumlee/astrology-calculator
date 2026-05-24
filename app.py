@@ -1,5 +1,6 @@
 """
 Traditional Astrology Chart Calculator — Streamlit UI
+Horary / Natal · Lilly & Frawley · Regiomontanus
 """
 
 import streamlit as st
@@ -7,12 +8,13 @@ import pandas as pd
 import requests
 import base64
 import os
+import re
 import tempfile
 from datetime import date
 from timezonefinder import TimezoneFinder
 from kerykeion import AstrologicalSubject, KerykeionChartSVG
 from engine import (
-    calculate_chart, build_astroseek_url,
+    calculate_chart,
     get_essential_dignities_table, get_house_lords_table,
     _lon_to_dms, SIGNS, SIGN_SYMBOLS,
 )
@@ -25,56 +27,115 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Element / sign helpers ────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 FIRE_SIGNS  = {"Aries", "Leo", "Sagittarius"}
 EARTH_SIGNS = {"Taurus", "Virgo", "Capricorn"}
 AIR_SIGNS   = {"Gemini", "Libra", "Aquarius"}
 WATER_SIGNS = {"Cancer", "Scorpio", "Pisces"}
 
 ELEMENT_COLOR = {
-    **{s: "#e05555" for s in FIRE_SIGNS},
-    **{s: "#999999" for s in EARTH_SIGNS},
-    **{s: "#55aa55" for s in AIR_SIGNS},
-    **{s: "#5599dd" for s in WATER_SIGNS},
+    **{s: "#cc4444" for s in FIRE_SIGNS},
+    **{s: "#888888" for s in EARTH_SIGNS},
+    **{s: "#448844" for s in AIR_SIGNS},
+    **{s: "#4477bb" for s in WATER_SIGNS},
 }
 
 DIGNITY_COLOR = {
-    "Domicile":   "#69c17c",
-    "Exaltation": "#69a8c1",
-    "Triplicity": "#a069c1",
-    "Term":       "#c19a69",
-    "Face":       "#999999",
-    "Peregrine":  "#c16969",
-    "—":          "#555555",
+    "Domicile":   "#aaaaaa",
+    "Exaltation": "#cccccc",
+    "Triplicity": "#999999",
+    "Term":       "#777777",
+    "Face":       "#666666",
+    "Peregrine":  "#444444",
+    "—":          "#333333",
 }
 
-def sign_html(sign: str) -> str:
-    """Return coloured sign symbol + name."""
-    color = ELEMENT_COLOR.get(sign, "#c8a96e")
-    idx   = SIGNS.index(sign) if sign in SIGNS else 0
-    return f'<span style="color:{color};font-weight:bold">{SIGN_SYMBOLS[idx]} {sign}</span>'
+ASPECT_ICONS = {
+    "Conjunction": "☌", "Opposition": "☍", "Trine": "△",
+    "Square": "□", "Sextile": "✶", "Quincunx": "⚻", "Semi-sextile": "⚺",
+}
+ASPECT_TYPE_COLOR = {
+    "Conjunction": "#bbbbbb", "Opposition": "#888888",
+    "Trine":       "#bbbbbb", "Square":     "#888888",
+    "Sextile":     "#aaaaaa", "Quincunx":   "#777777",
+    "Semi-sextile":"#666666",
+}
 
-# ── CSS ───────────────────────────────────────────────────────────────────────
+# Only traditional 7 planets + North Node on the chart wheel
+KERYKEION_POINTS = [
+    "Sun", "Moon", "Mercury", "Venus", "Mars",
+    "Jupiter", "Saturn", "True_North_Lunar_Node",
+]
+# Colors that indicate modern planets in kerykeion SVG lines — strip these
+MODERN_PLANET_COLORS = [
+    "chiron", "uranus", "neptune", "pluto",
+    "mean-lilith", "true-lilith", "mean_lilith",
+]
+
+def sign_html(sign: str, with_name: bool = True) -> str:
+    color = ELEMENT_COLOR.get(sign, "#aaaaaa")
+    idx   = SIGNS.index(sign) if sign in SIGNS else 0
+    sym   = SIGN_SYMBOLS[idx]
+    text  = f"{sym} {sign}" if with_name else sym
+    return f'<span style="color:{color}">{text}</span>'
+
+# ── Monochrome CSS ────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .stApp { background-color: #0e0e1a; color: #e8d5a3; }
-    h1,h2,h3 { color: #c8a96e; font-family: Georgia, serif; }
-    .pcard {
-        background: linear-gradient(135deg,#1a1a2e,#16213e);
-        border: 1px solid #c8a96e33;
-        border-radius: 8px;
-        padding: 9px 13px;
-        margin: 3px 0;
-        font-size: 14px;
-        line-height: 1.5;
-    }
+    /* Base */
+    html, body, .stApp { background:#111111; color:#cccccc; font-family: 'Georgia', serif; }
+    h1,h2,h3,h4 { color:#eeeeee; font-weight:normal; letter-spacing:.03em; }
+    hr { border-color:#333333; }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] { background:#181818; border-right:1px solid #2a2a2a; }
+    [data-testid="stSidebar"] label { color:#aaaaaa !important; font-size:13px; }
+
+    /* Metric boxes */
     .mbox {
-        background: linear-gradient(135deg,#1a1a2e,#16213e);
-        border: 1px solid #c8a96e44;
-        border-radius: 8px;
-        padding: 10px 16px;
-        text-align: center;
+        background:#1a1a1a;
+        border:1px solid #333333;
+        border-radius:4px;
+        padding:9px 14px;
+        text-align:center;
+        margin-bottom:6px;
     }
+    .mbox .label { font-size:11px; color:#666666; text-transform:uppercase; letter-spacing:.08em; }
+    .mbox .value { font-size:15px; color:#dddddd; margin-top:3px; }
+
+    /* Planet / aspect cards */
+    .pcard {
+        background:#161616;
+        border:1px solid #2a2a2a;
+        border-left:3px solid #333333;
+        border-radius:3px;
+        padding:7px 12px;
+        margin:2px 0;
+        font-size:13px;
+        line-height:1.6;
+    }
+    .pcard.applying  { border-left-color:#448844; }
+    .pcard.separating{ border-left-color:#884444; }
+
+    /* Dataframe */
+    .stDataFrame { border:1px solid #2a2a2a; border-radius:3px; }
+
+    /* Buttons */
+    .stButton > button {
+        background:#1e1e1e; color:#cccccc;
+        border:1px solid #444444; border-radius:3px;
+    }
+    .stButton > button:hover { border-color:#888888; color:#ffffff; }
+
+    /* External link button */
+    .ext-link {
+        display:inline-block; padding:7px 16px;
+        background:#1a1a1a; border:1px solid #444444;
+        border-radius:3px; color:#aaaaaa;
+        text-decoration:none; font-size:13px;
+        letter-spacing:.03em;
+    }
+    .ext-link:hover { border-color:#aaaaaa; color:#dddddd; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -94,14 +155,23 @@ def geocode(city: str):
     except Exception:
         return None
 
-# ── Chart SVG (kerykeion, base64-embedded) ────────────────────────────────────
+# ── SVG chart wheel ───────────────────────────────────────────────────────────
+
+def _strip_modern_lines(svg: str) -> str:
+    """Remove <line> elements that use modern-planet CSS colour variables."""
+    out = []
+    for line in svg.split("\n"):
+        ll = line.lower()
+        if "<line" in ll and any(m in ll for m in MODERN_PLANET_COLORS):
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 @st.cache_data(ttl=600, show_spinner=False)
 def make_svg_b64(year, month, day, hour, minute, lat, lng, tz_str, name):
     """
-    Generate natal chart SVG via kerykeion (Regiomontanus, offline).
-    Returns base64-encoded SVG string for embedding in an <img> tag,
-    which bypasses Streamlit's HTML sanitiser stripping <style> blocks.
+    Generate natal chart SVG (Regiomontanus, traditional planets only).
+    Returned as base64 for <img> embedding — bypasses Streamlit's HTML sanitiser.
     """
     try:
         subj = AstrologicalSubject(
@@ -111,56 +181,68 @@ def make_svg_b64(year, month, day, hour, minute, lat, lng, tz_str, name):
             houses_system_identifier="R",
         )
         with tempfile.TemporaryDirectory() as tmpdir:
-            chart = KerykeionChartSVG(subj, chart_type="Natal", new_output_directory=tmpdir)
+            chart = KerykeionChartSVG(
+                subj,
+                chart_type="Natal",
+                new_output_directory=tmpdir,
+                active_points=KERYKEION_POINTS,
+            )
             chart.makeSVG()
-            # Find generated file
             svg_files = [f for f in os.listdir(tmpdir) if f.endswith(".svg")]
             if not svg_files:
                 return None
-            with open(os.path.join(tmpdir, svg_files[0]), "rb") as f:
-                raw = f.read()
-        # Strip the leading HTML comment so we start at <svg
-        svg_start = raw.find(b"<svg")
+            with open(os.path.join(tmpdir, svg_files[0])) as f:
+                svg_text = f.read()
+
+        # Strip leading HTML comment, keep from <svg onwards
+        svg_start = svg_text.find("<svg")
         if svg_start > 0:
-            raw = raw[svg_start:]
-        b64 = base64.b64encode(raw).decode()
-        return b64
-    except Exception as e:
+            svg_text = svg_text[svg_start:]
+
+        # Remove stray aspect lines for modern planets
+        svg_text = _strip_modern_lines(svg_text)
+
+        return base64.b64encode(svg_text.encode()).decode()
+    except Exception:
         return None
 
-# ── AstroSeek interactive page URL ───────────────────────────────────────────
+# ── AstroSeek horary URL ──────────────────────────────────────────────────────
 
-def build_astroseek_page_url(chart) -> str:
-    """
-    Build the URL for the AstroSeek interactive birth chart page.
-    This opens in a new browser tab — server hotlink protection doesn't apply.
-    """
+def build_astroseek_horary_url(chart) -> str:
+    """Traditional horary chart on AstroSeek (opens in new tab)."""
     y, mo, d = chart.birth_date.split("-")
     h, mi    = (chart.birth_time.split(":") if chart.birth_time != "Unknown" else ("12", "00"))
-    lat_d    = abs(int(chart.latitude))
-    lat_m    = int((abs(chart.latitude) % 1) * 60)
-    lat_s    = "0" if chart.latitude >= 0 else "1"
-    lon_d    = abs(int(chart.longitude))
-    lon_m    = int((abs(chart.longitude) % 1) * 60)
-    lon_s    = "0" if chart.longitude >= 0 else "1"
+    lat_d = abs(int(chart.latitude));  lat_m = int((abs(chart.latitude) % 1) * 60)
+    lon_d = abs(int(chart.longitude)); lon_m = int((abs(chart.longitude) % 1) * 60)
+    lat_s = "0" if chart.latitude  >= 0 else "1"
+    lon_s = "0" if chart.longitude >= 0 else "1"
     city_enc = chart.city.replace(" ", "+")
 
     return (
-        "https://horoscopes.astro-seek.com/birth-chart-horoscope-online?"
-        f"narozeni_den={int(d)}&narozeni_mesic={int(mo)}&narozeni_rok={y}"
-        f"&narozeni_hodina={h}&narozeni_minuta={mi}"
-        f"&narozeni_mesto_hidden={city_enc}"
+        "https://horoscopes.astro-seek.com/calculate-traditional-chart/?"
+        "horary=1&tradicni=1&chiron_asp=on&send_calculation=1"
+        f"&narozeni_den={int(d)}&narozeni_mesic={int(mo)}&narozeni_rok={y}"
+        f"&narozeni_hodina={h.zfill(2)}&narozeni_minuta={mi.zfill(2)}&narozeni_sekunda=00"
         f"&narozeni_city={city_enc}"
+        f"&narozeni_mesto_hidden={city_enc}"
+        f"&narozeni_stat_hidden=&narozeni_podstat_kratky_hidden="
         f"&narozeni_sirka_stupne={lat_d}&narozeni_sirka_minuty={lat_m}&narozeni_sirka_smer={lat_s}"
         f"&narozeni_delka_stupne={lon_d}&narozeni_delka_minuty={lon_m}&narozeni_delka_smer={lon_s}"
-        f"&narozeni_timezone_form=auto&narozeni_timezone_dst_form=auto"
-        f"&house_system=regiomontanus&v1=1"
+        "&narozeni_timezone_form=auto&narozeni_timezone_dst_form=auto"
+        "&house_system=regiomontanus&aya=&terms=&house_system2="
+        "&hid_fortune=1&hid_fortune_check=on&hid_spirit=1&hid_syzygy=1"
+        "&hid_uzel=1&hid_uzel_check=on"
+        "&custom_aya_zmena_smer=0&custom_aya_zmena_stupne=00"
+        "&custom_aya_zmena_minuty=00&custom_aya_zmena_vteriny=00"
+        "&custom_aya_vlastni_smer=0&custom_aya_vlastni_stupne=00"
+        "&custom_aya_vlastni_minuty=00&custom_aya_vlastni_vteriny=00"
+        "&tolerance=1"
     )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("## 🌙 Chart Data")
+    st.markdown("## Chart Data")
     st.markdown("---")
 
     person_name = st.text_input("Name (optional)", placeholder="e.g. John Smith")
@@ -175,11 +257,11 @@ with st.sidebar:
     st.markdown("**Time (local)**")
     tc1, tc2 = st.columns(2)
     with tc1:
-        birth_hour   = st.number_input("Hour",   min_value=0, max_value=23, value=12, step=1, format="%d")
+        birth_hour   = st.number_input("Hour", min_value=0, max_value=23, value=12, step=1, format="%d")
     with tc2:
-        birth_minute = st.number_input("Min",    min_value=0, max_value=59, value=0,  step=1, format="%d")
+        birth_minute = st.number_input("Min",  min_value=0, max_value=59, value=0,  step=1, format="%d")
 
-    st.markdown("### 📍 Place")
+    st.markdown("### Place")
     city_input = st.text_input("City", value="Varna, Bulgaria")
 
     selected_lat, selected_lon, selected_city, selected_tz = None, None, city_input, "UTC"
@@ -197,7 +279,8 @@ with st.sidebar:
             selected_lon  = float(geo[idx]["lon"])
             selected_city = geo[idx]["display_name"].split(",")[0].strip()
             selected_tz   = TimezoneFinder().timezone_at(lat=selected_lat, lng=selected_lon) or "UTC"
-            st.caption(f"📌 {selected_city} · {selected_lat:.3f}°, {selected_lon:.3f}° · {selected_tz}")
+            st.caption(f"{selected_city} · {selected_lat:.3f}°, {selected_lon:.3f}°")
+            st.caption(f"tz: {selected_tz}")
         else:
             st.warning("City not found — enter coordinates manually.")
             selected_lat  = st.number_input("Latitude",  value=43.2167, format="%.4f")
@@ -206,18 +289,18 @@ with st.sidebar:
             selected_tz   = TimezoneFinder().timezone_at(lat=selected_lat, lng=selected_lon) or "UTC"
 
     st.markdown("---")
-    calc_btn = st.button("✨ Calculate Chart", type="primary", use_container_width=True)
+    calc_btn = st.button("Calculate Chart", type="primary", use_container_width=True)
 
     st.markdown("---")
-    st.markdown("### ⚙️ Display")
+    st.markdown("**Display**")
     show_aspects  = st.checkbox("Aspects",      value=True)
     show_antiscia = st.checkbox("Antiscia",     value=True)
     show_arabic   = st.checkbox("Arabic Parts", value=True)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-st.markdown("# 🌙 Traditional Astrology Calculator")
-st.markdown("*Regiomontanus · Traditional rulerships · Lilly & Frawley*")
+st.markdown("# Traditional Astrology Calculator")
+st.markdown("*Regiomontanus · Seven planets · Lilly & Frawley*")
 st.markdown("---")
 
 if "chart" not in st.session_state:
@@ -227,7 +310,7 @@ if calc_btn and selected_lat is not None:
     with st.spinner("Computing…"):
         try:
             ch = calculate_chart(
-                name=person_name or "Native",
+                name=person_name or "Chart",
                 year=birth_date.year, month=birth_date.month, day=birth_date.day,
                 hour=int(birth_hour), minute=int(birth_minute),
                 city=selected_city, lat=selected_lat, lon=selected_lon,
@@ -242,29 +325,30 @@ chart = st.session_state.get("chart")
 
 if chart is None:
     st.markdown("""
-    ### How to use
-    1. Enter date, time (type hours/minutes directly), and city in the sidebar
+    **How to use**
+
+    1. Enter date, time, and city in the sidebar
     2. Click **Calculate Chart**
     3. View the chart wheel, dignities, aspects, and more
 
-    *Accuracy: Swiss Ephemeris validated to <0.01° vs AstroSeek.*
+    *Swiss Ephemeris · accuracy <0.01° vs AstroSeek*
     """)
     st.stop()
 
 # ── Header metrics ────────────────────────────────────────────────────────────
 
-st.markdown(f"## {chart.name}")
+st.markdown(f"### {chart.name}")
 for col, label, val in zip(
     st.columns(4),
-    ["Date", "Time (local)", "Ascendant", "MC"],
+    ["Date", "Time · UTC offset", "Ascendant", "Midheaven"],
     [chart.birth_date,
-     f"{chart.birth_time}  UTC{chart.utc_offset:+.1f}",
+     f"{chart.birth_time}  ({chart.utc_offset:+.1f}h)",
      chart.asc_dms, chart.mc_dms],
 ):
     with col:
         st.markdown(
-            f'<div class="mbox"><div style="font-size:11px;color:#888">{label}</div>'
-            f'<div style="font-size:15px;font-weight:bold;color:#c8a96e">{val}</div></div>',
+            f'<div class="mbox"><div class="label">{label}</div>'
+            f'<div class="value">{val}</div></div>',
             unsafe_allow_html=True,
         )
 
@@ -275,24 +359,21 @@ st.markdown("")
 col_info, col_wheel = st.columns([1, 2])
 
 with col_info:
-    st.markdown(f"""
-- **Place:** {chart.city}
-- **Lat/Lon:** {chart.latitude:.4f}° / {chart.longitude:.4f}°
-- **Timezone:** {chart.timezone}
-- **Chart:** {"☀️ Day" if chart.is_day_chart else "🌙 Night"}
-- **Houses:** Regiomontanus
-- **ASC:** {sign_html(chart.asc_sign)}
-- **MC:** {sign_html(chart.mc_sign)}
-""", unsafe_allow_html=True)
-
-    # AstroSeek link
-    ask_url = build_astroseek_page_url(chart)
     st.markdown(
-        f'<a href="{ask_url}" target="_blank" style="'
-        'display:inline-block;margin-top:8px;padding:7px 14px;'
-        'background:#1a1a2e;border:1px solid #c8a96e88;border-radius:6px;'
-        'color:#c8a96e;text-decoration:none;font-size:13px;">'
-        '🔭 Open on AstroSeek ↗</a>',
+        f"**Place:** {chart.city}  \n"
+        f"**Lat/Lon:** {chart.latitude:.4f}° / {chart.longitude:.4f}°  \n"
+        f"**Timezone:** {chart.timezone}  \n"
+        f"**Chart:** {'Day' if chart.is_day_chart else 'Night'}  \n"
+        f"**Houses:** Regiomontanus  \n"
+        f"**ASC sign:** {sign_html(chart.asc_sign)}  \n"
+        f"**MC sign:** {sign_html(chart.mc_sign)}",
+        unsafe_allow_html=True,
+    )
+    st.markdown("")
+
+    ask_url = build_astroseek_horary_url(chart)
+    st.markdown(
+        f'<a class="ext-link" href="{ask_url}" target="_blank">Open on AstroSeek ↗</a>',
         unsafe_allow_html=True,
     )
 
@@ -304,15 +385,14 @@ with col_wheel:
     with st.spinner("Rendering chart wheel…"):
         b64 = make_svg_b64(
             int(yy), int(mm), int(dd), int(hh), int(mmin),
-            chart.latitude, chart.longitude, tz,
-            chart.name,
+            chart.latitude, chart.longitude, tz, chart.name,
         )
 
     if b64:
+        # Full-width, no max-width cap — make it big
         st.markdown(
             f'<img src="data:image/svg+xml;base64,{b64}" '
-            f'width="100%" style="max-width:680px;display:block;margin:auto;" '
-            f'alt="Natal chart wheel"/>',
+            f'style="width:100%;display:block;" alt="Chart wheel"/>',
             unsafe_allow_html=True,
         )
     else:
@@ -323,103 +403,96 @@ st.markdown("---")
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
 tab1, tab2, tab3, tab4 = st.tabs(
-    ["🪐 Planets", "🏠 Houses & Lords", "⚡ Aspects", "📐 Parts & Antiscia"]
+    ["Planets", "Houses & Lords", "Aspects", "Parts & Antiscia"]
 )
 
 # ── Tab 1: Planets ────────────────────────────────────────────────────────────
 with tab1:
     st.markdown("### Planetary Positions & Essential Dignities")
-    st.caption("Traditional rulerships (Lilly) · Ptolemaic terms · Chaldean faces")
 
     rows = get_essential_dignities_table(chart)
     if rows:
-        # Attach hidden element colour per row
         for row in rows:
-            pname = row["Planet"].split(" ", 1)[-1]   # strip symbol
+            pname = row["Planet"].split(" ", 1)[-1]
             p = chart.planets.get(pname)
             row["_sign"] = p.sign if p else ""
 
         df = pd.DataFrame(rows)
+        display_cols = [c for c in df.columns if not c.startswith("_")]
 
         def style_planets(row):
-            n = len(row)
-            styles = [""] * n
-            cols_list = list(df.columns)
-            dig_i  = cols_list.index("Dignity") if "Dignity" in cols_list else -1
-            sign_i = cols_list.index("Sign")    if "Sign"    in cols_list else -1
-            if dig_i >= 0:
-                styles[dig_i] = f"color:{DIGNITY_COLOR.get(row['Dignity'], '#555')};font-weight:bold"
-            if sign_i >= 0:
-                styles[sign_i] = f"color:{ELEMENT_COLOR.get(row.get('_sign',''), '#c8a96e')};font-weight:bold"
+            styles = [""] * len(row)
+            cols_list = list(df[display_cols].columns)
+            if "Dignity" in cols_list:
+                i = cols_list.index("Dignity")
+                styles[i] = f"color:{DIGNITY_COLOR.get(row.get('Dignity','—'), '#555')}"
+            if "Sign" in cols_list:
+                i = cols_list.index("Sign")
+                sign = row.get("_sign", "")
+                styles[i] = f"color:{ELEMENT_COLOR.get(sign, '#aaa')}"
             return styles
 
-        display_cols = [c for c in df.columns if not c.startswith("_")]
-        styled = (
-            df[display_cols]
-            .style.apply(style_planets, axis=1)
+        styled = df[display_cols].style.apply(
+            lambda row: style_planets(row), axis=1
         )
         st.dataframe(styled, width="stretch", hide_index=True)
 
-    # Compact inline legend — no separate header
+    # Inline legend — single row, no header clutter
     st.markdown(
-        '<div style="margin-top:12px;font-size:13px;line-height:2">'
-        '<b style="color:#aaa">Dignity:</b>&nbsp;'
-        + "&nbsp; ".join(
-            f'<span style="color:{c}">● {l}</span>'
-            for l, c in DIGNITY_COLOR.items() if l != "—"
+        '<div style="margin-top:10px;font-size:12px;color:#666;line-height:2">'
+        '<span style="color:#999">Dignity:</span> '
+        + " · ".join(f'<span style="color:{c}">{l}</span>' for l, c in DIGNITY_COLOR.items() if l != "—")
+        + ' &emsp; <span style="color:#999">Sign element:</span> '
+        + " · ".join(
+            f'<span style="color:{c}">{l}</span>'
+            for l, c in [("Fire ♈♌♐","#cc4444"),("Earth ♉♍♑","#888888"),
+                         ("Air ♊♎♒","#448844"),("Water ♋♏♓","#4477bb")]
         )
-        + "&nbsp;&nbsp;&nbsp; <b style='color:#aaa'>Element:</b>&nbsp;"
-        + "&nbsp; ".join(
-            f'<span style="color:{c}">■ {l}</span>'
-            for l, c in [
-                ("Fire", "#e05555"), ("Earth", "#999999"),
-                ("Air", "#55aa55"),  ("Water", "#5599dd"),
-            ]
-        )
-        + "</div>",
+        + '</div>',
         unsafe_allow_html=True,
     )
 
 # ── Tab 2: Houses & Lords ─────────────────────────────────────────────────────
 with tab2:
     st.markdown("### House Cusps & Traditional Lords")
-    st.caption("Traditional rulerships only — Saturn rules Aquarius, Jupiter rules Pisces")
+    st.caption("Saturn rules Aquarius · Jupiter rules Pisces")
 
     rows = get_house_lords_table(chart)
-    cols = st.columns(3)
+    cols3 = st.columns(3)
     for i, row in enumerate(rows):
-        with cols[i % 3]:
-            lord = chart.planets.get(row["Lord"])
-            sign = row["Sign"]
-            sc   = ELEMENT_COLOR.get(sign, "#c8a96e")
-            si   = SIGNS.index(sign) if sign in SIGNS else 0
-            dig_c  = DIGNITY_COLOR.get(lord.dignity, "#aaa") if lord else "#aaa"
-            dig_s  = f'<span style="color:{dig_c}">{lord.dignity}</span>' if lord else ""
-            retro  = ' <span style="color:#c16969">℞</span>' if (lord and lord.retrograde) else ""
+        with cols3[i % 3]:
+            lord  = chart.planets.get(row["Lord"])
+            sign  = row["Sign"]
+            sc    = ELEMENT_COLOR.get(sign, "#888")
+            si    = SIGNS.index(sign) if sign in SIGNS else 0
+            dig_c = DIGNITY_COLOR.get(lord.dignity, "#666") if lord else "#666"
+            dig_s = f'<span style="color:{dig_c}">{lord.dignity}</span>' if lord else "—"
+            retro = ' <span style="color:#884444">℞</span>' if (lord and lord.retrograde) else ""
             st.markdown(
                 f'<div class="pcard">'
-                f'<b style="color:#c8a96e">H{row["House"]}</b>'
+                f'<span style="color:#888">H{row["House"]}</span>'
                 f' <span style="color:{sc}">{SIGN_SYMBOLS[si]} {sign}</span><br>'
-                f'<b>{row["Lord"]}</b>{retro} · {row["Lord Position"]}<br>'
-                f'<small style="color:#aaa">H{row["Lord House"]} · {dig_s}</small>'
+                f'<b style="color:#dddddd">{row["Lord"]}</b>{retro}'
+                f' <span style="color:#555">·</span> {row["Lord Position"]}<br>'
+                f'<small style="color:#555">H{row["Lord House"]} · {dig_s}</small>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
 
 # ── Tab 3: Aspects ────────────────────────────────────────────────────────────
 with tab3:
-    if show_aspects and chart.aspects:
-        st.markdown("### Aspects")
+    # Filter to only planet-to-planet aspects (both parties must be in our planet dict)
+    planet_names = set(chart.planets.keys())
+    planet_aspects = [
+        a for a in chart.aspects
+        if a["planet1"] in planet_names and a["planet2"] in planet_names
+    ]
 
-        ASPECT_ICONS = {
-            "Conjunction": "☌", "Opposition": "☍", "Trine": "△",
-            "Square": "□", "Sextile": "✶", "Quincunx": "⚻", "Semi-sextile": "⚺",
-        }
-        ASPECT_TYPE_COLOR = {
-            "Conjunction": "#c8a96e", "Opposition": "#c16969",
-            "Trine": "#69c17c",       "Square": "#c16969",
-            "Sextile": "#69a8c1",     "Quincunx": "#a069c1", "Semi-sextile": "#888",
-        }
+    if show_aspects and planet_aspects:
+        st.markdown("### Aspects")
+        st.caption(
+            "Applying = green border · Separating = red border"
+        )
 
         cf1, cf2 = st.columns(2)
         with cf1:
@@ -431,58 +504,52 @@ with tab3:
         with cf2:
             dir_filter = st.selectbox("Direction", ["All", "Applying only", "Separating only"])
 
-        filtered = [a for a in chart.aspects if a["aspect"] in asp_filter]
+        filtered = [a for a in planet_aspects if a["aspect"] in asp_filter]
         if dir_filter == "Applying only":
             filtered = [a for a in filtered if a["applying"]]
         elif dir_filter == "Separating only":
             filtered = [a for a in filtered if not a["applying"]]
 
-        st.caption(
-            f'{len(filtered)} aspects shown &nbsp;·&nbsp; '
-            '<span style="color:#55aa55">▶ Applying</span> &nbsp; '
-            '<span style="color:#c16969">◀ Separating</span>',
-            unsafe_allow_html=True,
-        )
+        st.caption(f"{len(filtered)} aspects shown")
 
         for asp in sorted(filtered, key=lambda x: x["orb"]):
-            applying  = asp["applying"]
-            dir_col   = "#55aa55" if applying else "#c16969"
-            dir_lbl   = "▶ Applying" if applying else "◀ Separating"
-            bdr_col   = "#55aa5555" if applying else "#c1696955"
-            asp_col   = ASPECT_TYPE_COLOR.get(asp["aspect"], "#888")
-            icon      = ASPECT_ICONS.get(asp["aspect"], "")
+            applying = asp["applying"]
+            css_cls  = "applying" if applying else "separating"
+            dir_col  = "#448844" if applying else "#884444"
+            dir_lbl  = "▶" if applying else "◀"
+            asp_col  = ASPECT_TYPE_COLOR.get(asp["aspect"], "#888")
+            icon     = ASPECT_ICONS.get(asp["aspect"], "")
             p1 = chart.planets.get(asp["planet1"])
             p2 = chart.planets.get(asp["planet2"])
-            s1 = (p1.symbol + " ") if p1 else ""
-            s2 = (p2.symbol + " ") if p2 else ""
-            # Sign colours for planet names
-            c1s = ELEMENT_COLOR.get(p1.sign, "#e8d5a3") if p1 else "#e8d5a3"
-            c2s = ELEMENT_COLOR.get(p2.sign, "#e8d5a3") if p2 else "#e8d5a3"
+            c1 = ELEMENT_COLOR.get(p1.sign, "#ccc") if p1 else "#ccc"
+            c2 = ELEMENT_COLOR.get(p2.sign, "#ccc") if p2 else "#ccc"
+            s1 = f"{p1.symbol} " if p1 else ""
+            s2 = f"{p2.symbol} " if p2 else ""
             st.markdown(
-                f'<div class="pcard" style="border-color:{bdr_col}">'
-                f'<span style="color:{asp_col};font-size:17px">{icon}</span> '
-                f'<span style="color:{c1s}">{s1}{asp["planet1"]}</span>'
-                f' <span style="color:{asp_col}"> {asp["aspect"]} </span>'
-                f'<span style="color:{c2s}">{s2}{asp["planet2"]}</span>'
+                f'<div class="pcard {css_cls}">'
+                f'<span style="color:{asp_col};font-size:15px">{icon}</span> '
+                f'<span style="color:{c1}">{s1}{asp["planet1"]}</span>'
+                f' <span style="color:{asp_col}">{asp["aspect"]}</span> '
+                f'<span style="color:{c2}">{s2}{asp["planet2"]}</span>'
                 f'&ensp;<span style="color:{dir_col};font-size:12px">{dir_lbl}</span>'
-                f'&ensp;<span style="color:#666;font-size:12px">orb {asp["orb"]}°</span>'
+                f'&ensp;<span style="color:#555;font-size:12px">orb {asp["orb"]}°</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
     else:
-        st.info("No aspects to display.")
+        st.info("No planet-to-planet aspects to display.")
 
 # ── Tab 4: Arabic Parts & Antiscia ───────────────────────────────────────────
 with tab4:
     if show_arabic:
         st.markdown("### Arabic Parts")
-        st.caption("Day: Asc + ☽ − ☉ &nbsp;|&nbsp; Night: Asc + ☉ − ☽ &nbsp;(Lilly)")
+        st.caption("Day: Asc + Moon − Sun · Night: Asc + Sun − Moon (Lilly)")
 
         pof_dms   = _lon_to_dms(chart.part_of_fortune)
         pof_house = None
         for i in range(12):
-            cs = chart.house_cusps[i]
-            ce = chart.house_cusps[(i + 1) % 12]
+            cs  = chart.house_cusps[i]
+            ce  = chart.house_cusps[(i + 1) % 12]
             lon = chart.part_of_fortune
             if ce < cs:
                 if lon >= cs or lon < ce:
@@ -493,10 +560,11 @@ with tab4:
 
         st.markdown(
             f'<div class="pcard">'
-            f'<b style="color:#c8a96e;font-size:15px">⊕ Part of Fortune</b><br>'
-            f'<span style="font-size:20px">{pof_dms}</span>'
-            f'&ensp;<span style="color:#aaa;font-size:13px">House {pof_house or "?"}'
-            f' · {"Day formula" if chart.is_day_chart else "Night formula"}</span>'
+            f'<span style="color:#888">⊕ Part of Fortune</span><br>'
+            f'<b style="font-size:16px;color:#dddddd">{pof_dms}</b>'
+            f'&ensp;<span style="color:#555;font-size:12px">'
+            f'House {pof_house or "?"} · '
+            f'{"Day" if chart.is_day_chart else "Night"} formula</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -504,10 +572,7 @@ with tab4:
     if show_antiscia:
         st.markdown("---")
         st.markdown("### Antiscia")
-        st.caption(
-            "Mirror points across the Cancer/Capricorn solstice axis (Frawley ch. 7). "
-            "Planets in conjunction or opposition by antiscion within 2° act on each other in a hidden way."
-        )
+        st.caption("Mirror points across the Cancer/Capricorn solstice axis (Frawley). Orb ≤ 2°.")
 
         from engine import _aspect_angle
         plist = list(chart.planets.values())
@@ -518,7 +583,7 @@ with tab4:
                 if conj <= 2.0:
                     anti_contacts.append({
                         "Planet 1": f"{p1.symbol} {p1.name} ({p1.dms})",
-                        "Antiscion of 1": _lon_to_dms(p1.antiscion),
+                        "Antiscion": _lon_to_dms(p1.antiscion),
                         "Contact": "Conj",
                         "Planet 2": f"{p2.symbol} {p2.name} ({p2.dms})",
                         "Orb": f"{conj:.2f}°",
@@ -527,7 +592,7 @@ with tab4:
                 if opp <= 2.0:
                     anti_contacts.append({
                         "Planet 1": f"{p1.symbol} {p1.name} ({p1.dms})",
-                        "Antiscion of 1": _lon_to_dms(p1.antiscion),
+                        "Antiscion": _lon_to_dms(p1.antiscion),
                         "Contact": "Oppo",
                         "Planet 2": f"{p2.symbol} {p2.name} ({p2.dms})",
                         "Orb": f"{opp:.2f}°",
@@ -542,12 +607,8 @@ with tab4:
         st.markdown("#### All Antiscia Positions")
         st.dataframe(
             pd.DataFrame([
-                {
-                    "Planet":         f"{p.symbol} {n}",
-                    "Position":       p.dms,
-                    "Antiscion":      _lon_to_dms(p.antiscion),
-                    "Antiscion Sign": p.antiscion_sign,
-                }
+                {"Planet": f"{p.symbol} {n}", "Position": p.dms,
+                 "Antiscion": _lon_to_dms(p.antiscion), "Antiscion Sign": p.antiscion_sign}
                 for n, p in chart.planets.items()
             ]),
             width="stretch", hide_index=True,
@@ -556,8 +617,8 @@ with tab4:
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
-    '<div style="text-align:center;color:#555;font-size:12px">'
-    'Swiss Ephemeris · Regiomontanus houses · Chart: kerykeion · Sources: Lilly, Frawley'
+    '<div style="text-align:center;color:#444;font-size:11px">'
+    'Swiss Ephemeris · Regiomontanus · kerykeion · Lilly · Frawley'
     '</div>',
     unsafe_allow_html=True,
 )
