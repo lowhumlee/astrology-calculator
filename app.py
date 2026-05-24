@@ -199,6 +199,9 @@ def make_svg_b64(year, month, day, hour, minute, lat, lng, tz_str, name):
         if svg_start > 0:
             svg_text = svg_text[svg_start:]
 
+        # Replace "Birth Chart" label with "Horary Chart" in both title and text elements
+        svg_text = svg_text.replace("Birth Chart", "Horary Chart")
+
         # Remove stray aspect lines for modern planets
         svg_text = _strip_modern_lines(svg_text)
 
@@ -423,13 +426,11 @@ with tab1:
         def style_planets(row):
             styles = [""] * len(row)
             cols_list = list(df[display_cols].columns)
-            if "Dignity" in cols_list:
-                i = cols_list.index("Dignity")
-                styles[i] = f"color:{DIGNITY_COLOR.get(row.get('Dignity','—'), '#555')}"
+            # Colour ONLY the Sign column by element — everything else default
             if "Sign" in cols_list:
                 i = cols_list.index("Sign")
                 sign = row.get("_sign", "")
-                styles[i] = f"color:{ELEMENT_COLOR.get(sign, '#aaa')}"
+                styles[i] = f"color:{ELEMENT_COLOR.get(sign, '#cccccc')}"
             return styles
 
         styled = df[display_cols].style.apply(
